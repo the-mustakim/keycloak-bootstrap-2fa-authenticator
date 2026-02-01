@@ -135,33 +135,37 @@ public class QuestionAnswerAuthenticator
      * - Keycloak authentication flow engine
      */
     @Override
-    public void authenticate(AuthenticationFlowContext authenticationFlowContext) {
-        if (hasCookie(authenticationFlowContext)) {
-            authenticationFlowContext.success();
+    public void authenticate(AuthenticationFlowContext context) {
+        // 1. Check for the "Trusted Device" cookie
+        if (hasCookie(context)) {
+            context.success();
             return;
         }
 
-        // Attempt to get the user's specific credential
-        QuestionAnswerCredentialProvider provider = getCredentialProvider(authenticationFlowContext.getSession());
+        // 2. CRITICAL: Ensure a user has actually been identified by the previous step (Password)
+        UserModel user = context.getUser();
+        if (user == null) {
+            // This usually means the flow is misconfigured and this step is running too early
+            context.attempted();
+            return;
+        }
+
+        // 3. Attempt to get the user's specific credential
+        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
         QuestionAnswerCredentialModel model = provider.getDefaultCredential(
-                authenticationFlowContext.getSession(), authenticationFlowContext.getRealm(), authenticationFlowContext.getUser());
+                context.getSession(), context.getRealm(), user);
 
         if (model == null) {
-            // If the user hasn't set up a question, skip this authenticator
-            // This allows fallback to OTP if it's set to Alternative
-            authenticationFlowContext.attempted();
+            // User hasn't set a question; move to next option (like OTP)
+            context.attempted();
             return;
         }
 
-        // Set the specific question text so the login form shows their chosen question
-        authenticationFlowContext.form().setAttribute("question", model.getQuestionAnswerCredentialData().getQuestion());
-
-        Response challenge = authenticationFlowContext.form().createForm("question-answer.ftl");
-        authenticationFlowContext.challenge(challenge);
-
-
-
-
+        // 4. Render the form
+        context.form().setAttribute("question", model.getQuestionAnswerCredentialData().getQuestion());
+        context.form().setAttribute("credentialId", model.getId());
+        Response challenge = context.form().createForm("question-answer.ftl");
+        context.challenge(challenge);
     }
 
     /**
@@ -181,10 +185,15 @@ public class QuestionAnswerAuthenticator
         boolean validated = validateAnswer(authenticationFlowContext);
 
         if (!validated) {
-            Response challenge =
-                    authenticationFlowContext.form()
-                            .setError("badSecret")
-                            .createForm("question-answer.ftl");
+            // We recreate the challenge, but we MUST set the execution ID
+            Response challenge = authenticationFlowContext.form()
+                    .setError("Wrong Answer!!Try Again")
+                    // Re-add the question so the form isn't empty on reload
+                    .setAttribute("question", getQuestionFromModel(authenticationFlowContext))
+                    // CRITICAL: This allows the "Try Another Way" link to work
+                    .setExecution(authenticationFlowContext.getExecution().getId())
+                    .createForm("question-answer.ftl");
+
             authenticationFlowContext.failureChallenge(
                     AuthenticationFlowError.INVALID_CREDENTIALS,
                     challenge
@@ -192,8 +201,16 @@ public class QuestionAnswerAuthenticator
             return;
         }
 
+        // Success path
         setCookie(authenticationFlowContext);
         authenticationFlowContext.success();
+    }
+
+    private String getQuestionFromModel(AuthenticationFlowContext context) {
+        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
+        QuestionAnswerCredentialModel model = provider.getDefaultCredential(
+                context.getSession(), context.getRealm(), context.getUser());
+        return (model != null) ? model.getQuestionAnswerCredentialData().getQuestion() : "Security Question";
     }
 
     /**
@@ -233,38 +250,27 @@ public class QuestionAnswerAuthenticator
         String secret = formData.getFirst("secret_answer");
         String credentialId = formData.getFirst("credentialId");
 
-        // Fallback to default credential if no credentialId is provided
+        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
+
+        // 2. Resolve Credential ID (Priority: Form > Default)
         if (credentialId == null || credentialId.isEmpty()) {
+            CredentialModel defaultCred = provider.getDefaultCredential(
+                    context.getSession(), context.getRealm(), context.getUser());
 
-            CredentialModel defaultCred =
-                    getCredentialProvider(context.getSession())
-                            .getDefaultCredential(
-                                    context.getSession(),
-                                    context.getRealm(),
-                                    context.getUser()
-                            );
-
-            if (defaultCred == null) {
-                return false;
-            }
-
+            if (defaultCred == null) return false;
             credentialId = defaultCred.getId();
         }
 
-        UserCredentialModel input =
-                new UserCredentialModel(
-                        credentialId,
-                        getType(context.getSession()),
-                        secret
-                );
+        // 3. Create the input model for validation
+        // Use the explicit TYPE constant to avoid getType() resolution issues
+        UserCredentialModel input = new UserCredentialModel(
+                credentialId,
+                QuestionAnswerCredentialModel.TYPE,
+                secret
+        );
 
-        return getCredentialProvider(context.getSession())
-                .isValid(
-                        context.getRealm(),
-                        context.getUser(),
-                        input
-                );
-
+        // 4. Delegate to provider
+        return provider.isValid(context.getRealm(), context.getUser(), input);
     }
 
     /**

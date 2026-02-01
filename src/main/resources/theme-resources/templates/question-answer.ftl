@@ -1,25 +1,35 @@
 <#import "template.ftl" as layout>
 
-<@layout.loginLayout section>
+<@layout.registrationLayout displayInfo=false; section>
     <#if section = "header">
-        ${msg("loginSecretQuestionTitle","Security Question")}
+    <#-- Use a standard header or your custom message -->
+        ${msg("Enter your answer", "Security Question")}
     <#elseif section = "form">
         <form action="${url.loginAction}" method="post">
+            <#-- CRITICAL: Hidden fields for Keycloak flow state -->
+            <input type="hidden" name="credentialId" value="${credentialId!''}" />
+            <input type="hidden" name="execution" value="${execution!''}" />
+
             <div class="${properties.kcFormGroupClass!}">
                 <label class="${properties.kcLabelClass!}">
                     ${question}
                 </label>
-                <input type="password"
-                       name="secret_answer"
-                       class="${properties.kcInputClass!}"
-                       autofocus
-                       autocomplete="off"
-                       required />
+                <div class="${properties.kcInputWrapperClass!}">
+                    <input type="password"
+                           id="secret_answer"
+                           name="secret_answer"
+                           class="${properties.kcInputClass!}"
+                           autofocus
+                           autocomplete="off"
+                           required />
+                </div>
             </div>
 
-            <input type="submit"
-                   class="${properties.kcButtonClass!} ${properties.kcButtonPrimaryClass!}"
-                   value="${msg("doSubmit")}" />
+            <div class="${properties.kcFormGroupClass!}">
+                <input type="submit"
+                       class="${properties.kcButtonClass!} ${properties.kcButtonPrimaryClass!} ${properties.kcButtonBlockClass!}"
+                       value="${msg("doSubmit")}" />
+            </div>
         </form>
     </#if>
-</@layout.loginLayout>
+</@layout.registrationLayout>

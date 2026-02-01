@@ -152,8 +152,6 @@ public class QuestionAnswerRequiredActionProvider implements RequiredActionProvi
         //Hash the provided answer
         PasswordCredentialModel pcm =
                 hashProvider.encodedCredential(answer, iterations);
-//        //Mark the required action as successfully completed
-//        requiredActionContext.success();
         String encodedAnswer = pcm.getPasswordSecretData().getValue();
         int iterationsUsed = pcm.getPasswordCredentialData().getHashIterations();
         String algorithmUsed = pcm.getPasswordCredentialData().getAlgorithm();
@@ -173,8 +171,6 @@ public class QuestionAnswerRequiredActionProvider implements RequiredActionProvi
                 .createStoredCredential(credentialModel);
 
         requiredActionContext.success();
-
-
     }
 
     /**
