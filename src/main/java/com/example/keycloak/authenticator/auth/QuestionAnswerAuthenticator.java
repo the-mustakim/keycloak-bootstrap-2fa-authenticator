@@ -29,6 +29,7 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
 
     private static final Logger log = LoggerFactory.getLogger(QuestionAnswerAuthenticator.class);
     private static final String COOKIE_NAME = "SECRET_QUESTION_ANSWERED";
+    private static final String FORM_NAME = "question-answer";
 
     /**
      * [PURPOSE] Initial entry point for the authentication execution.
@@ -102,7 +103,7 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
         // Execution ID is required for Keycloak to map the POST request back to this step
         form.setExecution(context.getExecution().getId());
 
-        Response challenge = form.createForm("question-answer.ftl");
+        Response challenge = form.createForm(FORM_NAME);
         context.challenge(challenge);
     }
 
@@ -138,7 +139,7 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
                             .setError("Invalid answer. Please try again.")
                             .setExecution(context.getExecution().getId())
                             .setAttribute("question", getQuestionText(context))
-                            .createForm("question-answer.ftl"));
+                            .createForm(FORM_NAME));
         }
     }
 
