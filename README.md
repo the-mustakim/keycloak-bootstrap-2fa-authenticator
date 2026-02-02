@@ -1,11 +1,11 @@
-# 🔐 Keycloak Secret Question & OTP Authenticator
+# Keycloak Secret Question & OTP Authenticator
 
 This project implements a custom **Secret Question Authenticator** for **Keycloak**.  
 It is designed with a **Bootstrap authentication logic** that prevents user lockouts by allowing new users to log in successfully and immediately prompting them to configure both a **Secret Question** and **OTP**.
 
 ---
 
-## 🚀 Features
+## Features
 
 - **Dual-Factor Authentication**
   - Supports both **Secret Question** and standard **TOTP**
@@ -18,7 +18,7 @@ It is designed with a **Bootstrap authentication logic** that prevents user lock
 
 ---
 
-## 🛠️ Installation
+## Installation
 
 ### 1. Build the Project
 
@@ -52,7 +52,7 @@ docker restart <CONTAINER_ID>
 ```
 ---
 
-## ⚙️ Authentication Flow Setup
+## Authentication Flow Setup
 
 ![Auth Flow Diagram](images/img.png)
 
@@ -82,7 +82,7 @@ This configuration enables **"Try Another Way"** during authentication.
 
 ---
 
-## 🔁 Required Actions
+## Required Actions
 
 Navigate to **Authentication → Required Actions** and enable:
 
@@ -94,7 +94,7 @@ Navigate to **Authentication → Required Actions** and enable:
 
 ---
 
-## ✅ Result
+## Result
 
 - New users are never locked out
 - Authentication remains secure and flexible
