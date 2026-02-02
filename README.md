@@ -26,26 +26,30 @@ Ensure Maven is installed, then run:
 
 ```bash
 mvn clean packagee
-
+```
 ---
 
 ### 2. Deploy to Keycloak (Docker)
 
 # 1. Start Keycloak (Development Mode)
+```bash
 docker run -p 127.0.0.1:8080:8080 \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
   quay.io/keycloak/keycloak:26.5.2 start-dev
-
+```
 # 2. Copy the JAR to the providers folder
+```bash
 docker cp target/keycloak-secret-question-authenticator-1.0-SNAPSHOT.jar <CONTAINER_ID>:/opt/keycloak/providers/
-
+```
 # 3. Rebuild Keycloak to recognize the new provider
+```bash
 docker exec -it <CONTAINER_ID> /opt/keycloak/bin/kc.sh build
-
+```
 # 4. Restart the container (if necessary) to apply changes
+```bash
 docker restart <CONTAINER_ID>
-
+```
 ---
 
 ## ⚙️ Authentication Flow Setup
