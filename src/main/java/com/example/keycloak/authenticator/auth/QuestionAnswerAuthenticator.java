@@ -14,6 +14,7 @@ import org.keycloak.authentication.CredentialValidator;
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.credential.CredentialProvider;
 import org.keycloak.models.*;
+import org.keycloak.models.credential.OTPCredentialModel;
 
 import java.net.URI;
 
@@ -136,34 +137,68 @@ public class QuestionAnswerAuthenticator
      */
     @Override
     public void authenticate(AuthenticationFlowContext context) {
-        // 1. Check for the "Trusted Device" cookie
+        // 1. Check for Trusted Device Cookie
         if (hasCookie(context)) {
             context.success();
             return;
         }
 
-        // 2. CRITICAL: Ensure a user has actually been identified by the previous step (Password)
         UserModel user = context.getUser();
         if (user == null) {
-            // This usually means the flow is misconfigured and this step is running too early
             context.attempted();
             return;
         }
 
-        // 3. Attempt to get the user's specific credential
+        // 2. CHECK CONFIGURATION STATUS
+        // Check if user has Secret Question
+        boolean hasQuestion = configuredFor(context.getSession(), context.getRealm(), user);
+
+        // Check if user has OTP (Standard Keycloak OTP)
+        boolean hasOTP = user.credentialManager().isConfiguredFor(OTPCredentialModel.TYPE);
+
+        // 3. HANDLE MISSING CONFIGURATIONS (The Bootstrap Logic)
+
+        // If BOTH are missing -> Prevent Lockout!
+        if (!hasQuestion && !hasOTP) {
+            // Queue the setup actions
+            user.addRequiredAction(QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID);
+            user.addRequiredAction(UserModel.RequiredAction.CONFIGURE_TOTP);
+
+            // Return SUCCESS to bypass this flow and let the User reach the Setup screens
+            context.success();
+            return;
+        }
+
+        // If Question is missing (but they have OTP) -> Queue Question setup, let them login via OTP
+        if (!hasQuestion) {
+            user.addRequiredAction(QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID);
+            context.attempted(); // Skip Question form, fallback to OTP
+            return;
+        }
+
+        // If OTP is missing (but they have Question) -> Queue OTP setup, let them login via Question
+        if (!hasOTP) {
+            user.addRequiredAction(UserModel.RequiredAction.CONFIGURE_TOTP);
+            // Continue to show Question Form below...
+        }
+
+        // 4. NORMAL AUTHENTICATION (Render the Form)
         QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
         QuestionAnswerCredentialModel model = provider.getDefaultCredential(
                 context.getSession(), context.getRealm(), user);
 
         if (model == null) {
-            // User hasn't set a question; move to next option (like OTP)
+            // Should be caught by logic above, but safety check
             context.attempted();
             return;
         }
 
-        // 4. Render the form
         context.form().setAttribute("question", model.getQuestionAnswerCredentialData().getQuestion());
         context.form().setAttribute("credentialId", model.getId());
+
+        // CRITICAL FIX: Set the execution ID so the form knows where to submit
+        context.form().setExecution(context.getExecution().getId());
+
         Response challenge = context.form().createForm("question-answer.ftl");
         context.challenge(challenge);
     }
