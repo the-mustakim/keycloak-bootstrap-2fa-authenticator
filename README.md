@@ -24,29 +24,26 @@ It is designed with a **Bootstrap authentication logic** that prevents user lock
 
 Ensure Maven is installed, then run:
 
-mvn clean package
+```bash
+mvn clean packagee
 
 ---
 
 ### 2. Deploy to Keycloak (Docker)
 
-Start Keycloak in development mode:
-
+# 1. Start Keycloak (Development Mode)
 docker run -p 127.0.0.1:8080:8080 \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
   quay.io/keycloak/keycloak:26.5.2 start-dev
 
-Copy the authenticator JAR to the providers directory:
-
+# 2. Copy the JAR to the providers folder
 docker cp target/keycloak-secret-question-authenticator-1.0-SNAPSHOT.jar <CONTAINER_ID>:/opt/keycloak/providers/
 
-Rebuild Keycloak to register the provider:
-
+# 3. Rebuild Keycloak to recognize the new provider
 docker exec -it <CONTAINER_ID> /opt/keycloak/bin/kc.sh build
 
-Restart the container if required:
-
+# 4. Restart the container (if necessary) to apply changes
 docker restart <CONTAINER_ID>
 
 ---
