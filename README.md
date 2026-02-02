@@ -54,7 +54,7 @@ docker restart <CONTAINER_ID>
 
 ## ⚙️ Authentication Flow Setup
 
-![Auth Flow Diagram](docs/images/auth-flow.png)
+![Auth Flow Diagram](images/img.png)
 
 To enable the **Bootstrap behavior** (users are not locked out if unconfigured), configure the **Browser Flow** as follows:
 
