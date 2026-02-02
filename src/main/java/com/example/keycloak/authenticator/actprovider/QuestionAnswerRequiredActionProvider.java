@@ -1,5 +1,4 @@
 package com.example.keycloak.authenticator.actprovider;
-
 import com.example.keycloak.authenticator.credmodel.QuestionAnswerCredentialModel;
 import com.example.keycloak.authenticator.credprovider.QuestionAnswerCredentialProvider;
 import com.example.keycloak.authenticator.credprovider.QuestionAnswerCredentialProviderFactory;
