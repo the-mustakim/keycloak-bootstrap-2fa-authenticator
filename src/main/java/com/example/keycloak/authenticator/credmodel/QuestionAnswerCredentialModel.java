@@ -1,51 +1,36 @@
 package com.example.keycloak.authenticator.credmodel;
+
 import org.keycloak.common.util.Time;
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.util.JsonSerialization;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.IOException;
-import org.jboss.logging.Logger;
 
 /**
- * Domain-specific CredentialModel for Secret Question authentication.
- * This class acts as a bridge between:
- *  - Keycloak's generic CredentialModel (DB representation)
- *  - Strongly-typed domain objects used by authenticators
- * Responsibilities:
- *  - Encapsulate question metadata (algorithm, iterations)
- *  - Encapsulate sensitive secret data (hashed answer, salt)
- *  - Control creation vs reconstruction lifecycle
+ * [CLASS RESPONSIBILITY]
+ * This class acts as a domain-specific wrapper around Keycloak's generic CredentialModel.
+ * It handles the serialization of question metadata into 'credentialData' (JSON)
+ * and sensitive hashed answers into 'secretData' (JSON).
  */
 public class QuestionAnswerCredentialModel extends CredentialModel {
 
-    private static final Logger LOG =
-            Logger.getLogger(QuestionAnswerCredentialModel.class);
+    private static final Logger log = LoggerFactory.getLogger(QuestionAnswerCredentialModel.class);
 
     /**
-     * Credential type identifier stored in keycloak DB
-     * Must match the type referenced by the authenticator and credential provider
+     * Unique identifier for this credential type in the Keycloak database.
      */
-    //public static final String TYPE = "SECRET_QUESTION_CONFIG";
     public static final String TYPE = "SECRET_QUESTION";
 
-    /**
-     * Non-sensitive metadata (safe to store in credentialData JSON)
-     */
     private final QuestionAnswerCredentialData credentialData;
-
-    /**
-     * Sensitive material (stored in secretData JSON)
-     */
     private final QuestionAnswerSecretData secretData;
 
-
-    /***
-     * Reconstruction path (DB → Domain Object)
-     * Called by:
-     * - CredentialProvider
-     * - Authentication flow during validation
-     * Converts raw JSON stored in CredentialModel into strongly-typed objects
-     * **/
-    public static QuestionAnswerCredentialModel createFromCredentialModel(CredentialModel credentialModel){
+    /**
+     * [PURPOSE] Reconstructs a domain model from a database record.
+     * [LOGIC] Deserializes JSON strings from the DB into strongly-typed Java objects.
+     * [CALLER] The CredentialProvider when loading credentials for verification.
+     */
+    public static QuestionAnswerCredentialModel createFromCredentialModel(CredentialModel credentialModel) {
         try {
             QuestionAnswerCredentialData jsonCredentialData = JsonSerialization.readValue(
                     credentialModel.getCredentialData(),
@@ -57,25 +42,22 @@ public class QuestionAnswerCredentialModel extends CredentialModel {
             );
             return buildFromCredentialModel(credentialModel, jsonCredentialData, jsonSecretData);
         } catch (IOException e) {
-            LOG.errorf(
-                    e,
-                    "Failed to deserialize Secret Question credential [credentialId=%s]",
-                    credentialModel.getId()
-            );
-            throw new RuntimeException(e);
+            log.error("Failed to deserialize Secret Question credential [ID: {}]. Error: {}",
+                    credentialModel.getId(), e.getMessage());
+            throw new RuntimeException("Could not rehydrate Secret Question model", e);
         }
     }
 
-    /***
-    *  Internal helper method that rehydrates a domain model while preserving Keycloak-managed metadata (id, label, timestamps).
-    */
+    /**
+     * [PURPOSE] Internal helper to map base metadata (ID, created date) to the new domain object.
+     * [CALLER] Internal: createFromCredentialModel().
+     */
     private static QuestionAnswerCredentialModel buildFromCredentialModel(
             CredentialModel credentialModel,
             QuestionAnswerCredentialData jsonCredentialData,
             QuestionAnswerSecretData jsonSecretData) {
 
-        QuestionAnswerCredentialModel model =
-                new QuestionAnswerCredentialModel(jsonCredentialData, jsonSecretData);
+        QuestionAnswerCredentialModel model = new QuestionAnswerCredentialModel(jsonCredentialData, jsonSecretData);
 
         model.setUserLabel(credentialModel.getUserLabel());
         model.setCredentialData(credentialModel.getCredentialData());
@@ -86,27 +68,10 @@ public class QuestionAnswerCredentialModel extends CredentialModel {
         return model;
     }
 
-    /***
-     *  Creation path (Domain Object → DB)
-     *  Constructor used exclusively when creating a NEW credential.
-     *  - Answer is already hashed
-     *  - Salt is cryptographically secure
-     *  - Algorithm choice is validated by caller
-     */
-
-    private QuestionAnswerCredentialModel(String question, String algorithm, int hashIterations, String hashedAnswer, byte[] salt) {
-        credentialData = new QuestionAnswerCredentialData(question, algorithm, hashIterations);
-        secretData = new QuestionAnswerSecretData(hashedAnswer, salt);
-    }
-
-
     /**
-     * Entry point for authenticators when registering a new Secret Question.
-     * Flow:
-     *  1. Authenticator hashes the answer
-     *  2. Calls this factory method
-     *  3. Model serializes itself for persistence
-     * This method MUST be used instead of constructors directly.
+     * [PURPOSE] Factory method for creating a brand new credential (e.g., during setup).
+     * [LOGIC] Initializes domain objects and triggers the serialization to JSON.
+     * [CALLER] RequiredActionProvider or Authenticator during the enrollment phase.
      */
     public static QuestionAnswerCredentialModel createSecretQuestion(
             String question,
@@ -114,35 +79,41 @@ public class QuestionAnswerCredentialModel extends CredentialModel {
             int hashIterations,
             String hashedAnswer,
             byte[] salt
-    ){
-        QuestionAnswerCredentialModel credentialModel =
-                new QuestionAnswerCredentialModel(question, algorithm, hashIterations, hashedAnswer, salt);
+    ) {
+        QuestionAnswerCredentialModel model = new QuestionAnswerCredentialModel(
+                question, algorithm, hashIterations, hashedAnswer, salt);
 
-        credentialModel.setCredentialModelFields();
-        return credentialModel;
+        model.fillCredentialModelFields();
+        return model;
     }
 
     /**
-     * Serializes domain objects into JSON and sets mandatory Keycloak fields.
-     * This method defines the persistence contract for this credential type.
+     * [PURPOSE] Converts Java objects into JSON strings for database persistence.
+     * [LOGIC] Uses Keycloak's JsonSerialization to ensure compatibility with the server's Jackson config.
+     * [CALLER] Internal: createSecretQuestion().
      */
-    private void setCredentialModelFields(){
+    private void fillCredentialModelFields() {
         try {
             setCredentialData(JsonSerialization.writeValueAsString(credentialData));
             setSecretData(JsonSerialization.writeValueAsString(secretData));
         } catch (IOException e) {
-            LOG.error("Failed to serialize Secret Question credential data", e);
-            throw new IllegalStateException(
-                    "Failed to deserialize Secret Question credential",
-                    e
-            );
+            log.error("Critical Failure: Could not serialize Secret Question for storage.");
+            throw new IllegalStateException("Serialization failed", e);
         }
         setType(TYPE);
         setCreatedDate(Time.currentTimeMillis());
     }
 
     /**
-     * Constructor used internally during reconstruction from persistence.
+     * Constructor for initial creation.
+     */
+    private QuestionAnswerCredentialModel(String question, String algorithm, int hashIterations, String hashedAnswer, byte[] salt) {
+        this.credentialData = new QuestionAnswerCredentialData(question, algorithm, hashIterations);
+        this.secretData = new QuestionAnswerSecretData(hashedAnswer, salt);
+    }
+
+    /**
+     * Constructor for reconstruction from database.
      */
     private QuestionAnswerCredentialModel(QuestionAnswerCredentialData credentialData, QuestionAnswerSecretData secretData) {
         this.credentialData = credentialData;
@@ -150,17 +121,16 @@ public class QuestionAnswerCredentialModel extends CredentialModel {
     }
 
     /**
-     * @return Non-sensitive credential metadata (question, algorithm, iterations)
+     * [PURPOSE] Provides access to non-sensitive question metadata.
      */
     public QuestionAnswerCredentialData getQuestionAnswerCredentialData() {
         return credentialData;
     }
 
     /**
-     * @return Sensitive secret data (hashed answer + salt)
+     * [PURPOSE] Provides access to the hash and salt for verification.
      */
     public QuestionAnswerSecretData getQuestionAnswerSecretData() {
         return secretData;
     }
-
 }

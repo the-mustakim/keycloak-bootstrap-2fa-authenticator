@@ -1,4 +1,5 @@
 package com.example.keycloak.authenticator.auth;
+
 import com.example.keycloak.authenticator.actprovider.QuestionAnswerRequiredActionProviderFactory;
 import com.example.keycloak.authenticator.credmodel.QuestionAnswerCredentialModel;
 import com.example.keycloak.authenticator.credprovider.QuestionAnswerCredentialProvider;
@@ -11,389 +12,216 @@ import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.authentication.CredentialValidator;
-import org.keycloak.credential.CredentialModel;
 import org.keycloak.credential.CredentialProvider;
 import org.keycloak.models.*;
 import org.keycloak.models.credential.OTPCredentialModel;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.net.URI;
 
 /**
- * Authenticator implementation for Secret Question / Answer authentication.
- *
- * Responsibilities of this class:
- * - Acts as an authentication step inside a Keycloak authentication flow
- * - Renders the secret question form
- * - Processes the submitted answer
- * - Delegates answer validation to QuestionAnswerCredentialProvider
- * - Optionally bypasses the step using a browser cookie
- *
- * Where this class is used:
- * - Added as an execution inside a Keycloak Authentication Flow
- * - Invoked by Keycloak during browser login or other bound flows
+ * [CLASS RESPONSIBILITY]
+ * This class handles the runtime execution of the Secret Question authentication step.
+ * It manages the "Gatekeeper" logic (Bootstrap) to prevent lockouts, handles browser
+ * cookies for trusted devices, and coordinates with the CredentialProvider to verify answers.
  */
-public class QuestionAnswerAuthenticator
-        implements Authenticator, CredentialValidator<QuestionAnswerCredentialProvider> {
+public class QuestionAnswerAuthenticator implements Authenticator, CredentialValidator<QuestionAnswerCredentialProvider> {
 
-    /**
-     * Name of the cookie used to remember that the secret question
-     * has already been answered on this browser.
-     */
+    private static final Logger log = LoggerFactory.getLogger(QuestionAnswerAuthenticator.class);
     private static final String COOKIE_NAME = "SECRET_QUESTION_ANSWERED";
 
     /**
-     * Indicates whether this authenticator requires a user to already
-     * be identified before execution.
-     *
-     * Returning true means:
-     * - A previous authenticator (e.g., Username/Password) must have
-     *   already associated a UserModel with the flow.
-     *
-     * Who calls this:
-     * - Keycloak authentication engine when evaluating flow order
-     */
-    @Override
-    public boolean requiresUser() {
-        return true;
-    }
-
-    /**
-     * Returns the CredentialProvider used by this authenticator.
-     *
-     * This allows the authenticator to:
-     * - Validate user input
-     * - Access stored credentials
-     *
-     * Who calls this:
-     * - Keycloak via CredentialValidator interface
-     * - Internal methods in this authenticator
-     */
-    @Override
-    public QuestionAnswerCredentialProvider getCredentialProvider(
-            KeycloakSession session
-    ){
-        return (QuestionAnswerCredentialProvider)session.getProvider(CredentialProvider.class,QuestionAnswerCredentialProviderFactory.PROVIDER_ID);
-    }
-    /**
-     * Checks whether the current user has this authenticator configured.
-     *
-     * This determines whether:
-     * - The authenticator should execute normally
-     * - Or a required action should be triggered
-     *
-     * Who calls this:
-     * - Keycloak flow engine before executing this authenticator
-     */
-    @Override
-    public boolean configuredFor(
-            KeycloakSession keycloakSession,
-            RealmModel realmModel,
-            UserModel userModel) {
-
-        return getCredentialProvider(keycloakSession)
-                .isConfiguredFor(
-                        realmModel,
-                        userModel,
-                        QuestionAnswerCredentialModel.TYPE
-                );
-    }
-
-    /**
-     * Registers required actions if the user is not configured
-     * for this authenticator.
-     *
-     * This method is called only if:
-     * - configuredFor() returns false
-     * - The AuthenticatorFactory allows user setup
-     *
-     * Who calls this:
-     * - Keycloak flow engine
-     *
-     * Note:
-     * - Currently commented out
-     * - Intended to trigger Secret Question setup
-     */
-    @Override
-    public void setRequiredActions(
-            KeycloakSession keycloakSession,
-            RealmModel realmModel,
-            UserModel userModel) {
-
-         userModel.addRequiredAction(
-             QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID
-         );
-    }
-
-    /**
-     * Initial entry point when this authenticator is reached in the flow.
-     *
-     * Responsibilities:
-     * - Check if the browser already has a valid cookie
-     * - If yes → mark execution as successful
-     * - If no → render the secret question form
-     *
-     * Who calls this:
-     * - Keycloak authentication flow engine
+     * [PURPOSE] Initial entry point for the authentication execution.
+     * [LOGIC] Checks for trusted cookies and evaluates if the user needs to be
+     * redirected to setup (Bootstrap logic) or challenged with the question form.
+     * [CALLER] The Keycloak Authentication Flow Engine when it reaches this execution step.
      */
     @Override
     public void authenticate(AuthenticationFlowContext context) {
-        // 1. Check for Trusted Device Cookie
-        if (hasCookie(context)) {
+        UserModel user = context.getUser();
+
+        // 1. Trusted Device Check: Skip if the browser is already recognized
+        if (hasTrustedDeviceCookie(context)) {
+            log.info("Trusted device detected for user: {}. Bypassing Secret Question.", user.getUsername());
             context.success();
             return;
         }
 
-        UserModel user = context.getUser();
-        if (user == null) {
-            context.attempted();
-            return;
-        }
-
-        // 2. CHECK CONFIGURATION STATUS
-        // Check if user has Secret Question
+        // 2. Configuration Analysis (Bootstrap Logic)
         boolean hasQuestion = configuredFor(context.getSession(), context.getRealm(), user);
-
-        // Check if user has OTP (Standard Keycloak OTP)
         boolean hasOTP = user.credentialManager().isConfiguredFor(OTPCredentialModel.TYPE);
 
-        // 3. HANDLE MISSING CONFIGURATIONS (The Bootstrap Logic)
+        log.debug("User: {} | HasQuestion: {} | HasOTP: {}", user.getUsername(), hasQuestion, hasOTP);
 
-        // If BOTH are missing -> Prevent Lockout!
+        // CASE: Completely unconfigured user -> Setup both to prevent lockout
         if (!hasQuestion && !hasOTP) {
-            // Queue the setup actions
+            log.info("New user {} detected. Triggering bootstrap setup for OTP and Secret Question.", user.getUsername());
             user.addRequiredAction(QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID);
             user.addRequiredAction(UserModel.RequiredAction.CONFIGURE_TOTP);
-
-            // Return SUCCESS to bypass this flow and let the User reach the Setup screens
             context.success();
             return;
         }
 
-        // If Question is missing (but they have OTP) -> Queue Question setup, let them login via OTP
+        // CASE: Question missing but has OTP -> Queue question setup but don't block login
         if (!hasQuestion) {
+            log.debug("User {} missing Secret Question but has OTP. Queuing setup and skipping step.", user.getUsername());
             user.addRequiredAction(QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID);
-            context.attempted(); // Skip Question form, fallback to OTP
-            return;
-        }
-
-        // If OTP is missing (but they have Question) -> Queue OTP setup, let them login via Question
-        if (!hasOTP) {
-            user.addRequiredAction(UserModel.RequiredAction.CONFIGURE_TOTP);
-            // Continue to show Question Form below...
-        }
-
-        // 4. NORMAL AUTHENTICATION (Render the Form)
-        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
-        QuestionAnswerCredentialModel model = provider.getDefaultCredential(
-                context.getSession(), context.getRealm(), user);
-
-        if (model == null) {
-            // Should be caught by logic above, but safety check
             context.attempted();
             return;
         }
 
-        context.form().setAttribute("question", model.getQuestionAnswerCredentialData().getQuestion());
-        context.form().setAttribute("credentialId", model.getId());
+        // 3. Render Challenge: Present the question to the user
+        renderForm(context, null);
+    }
 
-        // CRITICAL FIX: Set the execution ID so the form knows where to submit
-        context.form().setExecution(context.getExecution().getId());
+    /**
+     * [PURPOSE] Utility to build and send the FreeMarker HTML challenge.
+     * [LOGIC] Fetches the user's question, attaches it to the form, and sets the
+     * execution ID to maintain the flow state.
+     * [CALLER] Internal: authenticate() for first load, or action() for failed attempts.
+     */
+    private void renderForm(AuthenticationFlowContext context, String errorMessage) {
+        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
+        QuestionAnswerCredentialModel model = provider.getDefaultCredential(
+                context.getSession(), context.getRealm(), context.getUser());
 
-        Response challenge = context.form().createForm("question-answer.ftl");
+        if (model == null) {
+            log.error("Logic failure: User {} reached form but has no credential model.", context.getUser().getUsername());
+            context.attempted();
+            return;
+        }
+
+        var form = context.form()
+                .setAttribute("question", model.getQuestionAnswerCredentialData().getQuestion())
+                .setAttribute("credentialId", model.getId());
+
+        if (errorMessage != null) {
+            form.setError(errorMessage);
+        }
+
+        // Execution ID is required for Keycloak to map the POST request back to this step
+        form.setExecution(context.getExecution().getId());
+
+        Response challenge = form.createForm("question-answer.ftl");
         context.challenge(challenge);
     }
 
     /**
-     * Processes the form submission from the secret question page.
-     *
-     * Responsibilities:
-     * - Extract user input
-     * - Validate the answer
-     * - Handle success or failure
-     *
-     * Who calls this:
-     * - Keycloak when the form POST is submitted
+     * [PURPOSE] Handles the HTTP POST request when the user submits their answer.
+     * [LOGIC] Extracts the form data, triggers the credential validation, and
+     * either sets a trusted cookie (Success) or re-challenges the user (Failure).
+     * [CALLER] The Keycloak Authentication Flow Engine after a form submission.
      */
     @Override
-    public void action(AuthenticationFlowContext authenticationFlowContext) {
+    public void action(AuthenticationFlowContext context) {
+        MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
+        String secretInput = formData.getFirst("secret_answer");
+        String credentialId = formData.getFirst("credentialId");
 
-        boolean validated = validateAnswer(authenticationFlowContext);
-
-        if (!validated) {
-            // We recreate the challenge, but we MUST set the execution ID
-            Response challenge = authenticationFlowContext.form()
-                    .setError("Wrong Answer!!Try Again")
-                    // Re-add the question so the form isn't empty on reload
-                    .setAttribute("question", getQuestionFromModel(authenticationFlowContext))
-                    // CRITICAL: This allows the "Try Another Way" link to work
-                    .setExecution(authenticationFlowContext.getExecution().getId())
-                    .createForm("question-answer.ftl");
-
-            authenticationFlowContext.failureChallenge(
-                    AuthenticationFlowError.INVALID_CREDENTIALS,
-                    challenge
-            );
+        if (secretInput == null || secretInput.trim().isEmpty()) {
+            log.warn("User {} submitted an empty answer.", context.getUser().getUsername());
+            renderForm(context, "Answer cannot be empty.");
             return;
         }
 
-        // Success path
-        setCookie(authenticationFlowContext);
-        authenticationFlowContext.success();
+        UserCredentialModel input = new UserCredentialModel(credentialId, QuestionAnswerCredentialModel.TYPE, secretInput);
+        boolean valid = getCredentialProvider(context.getSession()).isValid(context.getRealm(), context.getUser(), input);
+
+        if (valid) {
+            log.info("Secret Question verified successfully for user: {}", context.getUser().getUsername());
+            setTrustedDeviceCookie(context);
+            context.success();
+        } else {
+            log.warn("Invalid Secret Question attempt for user: {}", context.getUser().getUsername());
+            context.failureChallenge(AuthenticationFlowError.INVALID_CREDENTIALS,
+                    context.form()
+                            .setError("Invalid answer. Please try again.")
+                            .setExecution(context.getExecution().getId())
+                            .setAttribute("question", getQuestionText(context))
+                            .createForm("question-answer.ftl"));
+        }
     }
 
-    private String getQuestionFromModel(AuthenticationFlowContext context) {
-        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
-        QuestionAnswerCredentialModel model = provider.getDefaultCredential(
-                context.getSession(), context.getRealm(), context.getUser());
+    /**
+     * [PURPOSE] Fetches the raw question text for UI display.
+     * [CALLER] Internal helper for form rendering.
+     */
+    private String getQuestionText(AuthenticationFlowContext context) {
+        QuestionAnswerCredentialModel model = getCredentialProvider(context.getSession())
+                .getDefaultCredential(context.getSession(), context.getRealm(), context.getUser());
         return (model != null) ? model.getQuestionAnswerCredentialData().getQuestion() : "Security Question";
     }
 
     /**
-     * Checks whether the browser already has the "answered" cookie.
-     *
-     * Used to bypass the authenticator on trusted devices.
-     *
-     * Who calls this:
-     * - authenticate()
+     * [PURPOSE] Detects the presence of the "Trusted Device" cookie.
+     * [CALLER] Internal: authenticate() to decide if the step can be bypassed.
      */
-    protected boolean hasCookie(AuthenticationFlowContext context) {
-        Cookie cookie =
-                context.getHttpRequest()
-                        .getHttpHeaders()
-                        .getCookies()
-                        .get(COOKIE_NAME);
-
-        return cookie != null;
+    private boolean hasTrustedDeviceCookie(AuthenticationFlowContext context) {
+        Cookie cookie = context.getHttpRequest().getHttpHeaders().getCookies().get(COOKIE_NAME);
+        return cookie != null && "true".equals(cookie.getValue());
     }
 
     /**
-     * Validates the submitted secret answer.
-     *
-     * Responsibilities:
-     * - Read form parameters
-     * - Resolve the credential ID
-     * - Delegate validation to the CredentialProvider
-     *
-     * Who calls this:
-     * - action()
+     * [PURPOSE] Drops a secure, HttpOnly cookie on the user's browser upon success.
+     * [CALLER] Internal: action() upon successful validation of the answer.
      */
-    protected boolean validateAnswer(AuthenticationFlowContext context) {
+    private void setTrustedDeviceCookie(AuthenticationFlowContext context) {
+        AuthenticatorConfigModel config = context.getAuthenticatorConfig();
+        int maxAge = (config != null && config.getConfig().containsKey("cookie.max.age"))
+                ? Integer.parseInt(config.getConfig().get("cookie.max.age"))
+                : 2592000; // Default 30 days
 
-        MultivaluedMap<String, String> formData =
-                context.getHttpRequest().getDecodedFormParameters();
+        URI baseUri = context.getUriInfo().getBaseUriBuilder().path("realms").path(context.getRealm().getName()).build();
 
-        String secret = formData.getFirst("secret_answer");
-        String credentialId = formData.getFirst("credentialId");
+        NewCookie trustedCookie = new NewCookie.Builder(COOKIE_NAME)
+                .value("true")
+                .path(baseUri.getRawPath())
+                .maxAge(maxAge)
+                .secure(true)     // Security: Only send over HTTPS
+                .httpOnly(true)   // Security: Prevent Javascript from reading the cookie
+                .build();
 
-        QuestionAnswerCredentialProvider provider = getCredentialProvider(context.getSession());
-
-        // 2. Resolve Credential ID (Priority: Form > Default)
-        if (credentialId == null || credentialId.isEmpty()) {
-            CredentialModel defaultCred = provider.getDefaultCredential(
-                    context.getSession(), context.getRealm(), context.getUser());
-
-            if (defaultCred == null) return false;
-            credentialId = defaultCred.getId();
-        }
-
-        // 3. Create the input model for validation
-        // Use the explicit TYPE constant to avoid getType() resolution issues
-        UserCredentialModel input = new UserCredentialModel(
-                credentialId,
-                QuestionAnswerCredentialModel.TYPE,
-                secret
-        );
-
-        // 4. Delegate to provider
-        return provider.isValid(context.getRealm(), context.getUser(), input);
+        context.getSession().getContext().getHttpResponse().setCookieIfAbsent(trustedCookie);
     }
 
     /**
-     * Sets a cookie indicating that the secret question
-     * has been successfully answered.
-     *
-     * Cookie lifetime can be configured via AuthenticatorConfig.
-     *
-     * Who calls this:
-     * - action() on successful validation
-     */
-    protected void setCookie(AuthenticationFlowContext context) {
-
-        AuthenticatorConfigModel config =
-                context.getAuthenticatorConfig();
-
-        int maxCookieAge = 60 * 60 * 24 * 30; // default: 30 days
-
-        if (config != null) {
-            maxCookieAge =
-                    Integer.valueOf(
-                            config.getConfig().get("cookie.max.age")
-                    );
-        }
-
-        URI uri =
-                context.getUriInfo()
-                        .getBaseUriBuilder()
-                        .path("realms")
-                        .path(context.getRealm().getName())
-                        .build();
-
-        addCookie(
-                context,
-                COOKIE_NAME,
-                "true",
-                uri.getRawPath(),
-                null,
-                null,
-                maxCookieAge,
-                false,
-                true
-        );
-    }
-
-    /**
-     * Helper method to create and attach a cookie
-     * to the current HTTP request context.
-     *
-     * Who calls this:
-     * - setCookie()
-     */
-    private void addCookie(
-            AuthenticationFlowContext context,
-            String secretQuestionAnswered,
-            String aTrue,
-            String rawPath,
-            Object o,
-            Object o1,
-            int maxCookieAge,
-            boolean b,
-            boolean b1) {
-
-        NewCookie newCookie = new NewCookie(
-                COOKIE_NAME,
-                "true",
-                rawPath,
-                null,
-                null,
-                maxCookieAge,
-                true,
-                true
-        );
-
-        context.getSession()
-                .getContext()
-                .getHttpResponse()
-                .setCookieIfAbsent(newCookie);
-    }
-
-    /**
-     * Lifecycle cleanup hook.
-     *
-     * Who calls this:
-     * - Keycloak when the authenticator instance is being destroyed
+     * [PURPOSE] Tells Keycloak that this authenticator requires a user to be identified first.
+     * [CALLER] Keycloak Flow Engine to validate flow configuration.
      */
     @Override
-    public void close() {
+    public boolean requiresUser() { return true; }
+
+    /**
+     * [PURPOSE] Manually attaches Required Actions to the user profile.
+     * [CALLER] Keycloak if the 'configuredFor' check fails and setup is required.
+     */
+    @Override
+    public void setRequiredActions(KeycloakSession session, RealmModel realm, UserModel user) {
+        user.addRequiredAction(QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID);
     }
 
+    /**
+     * [PURPOSE] Checks if the user actually has a secret question credential stored.
+     * [CALLER] Keycloak and internal authenticate() logic.
+     */
+    @Override
+    public boolean configuredFor(KeycloakSession session, RealmModel realm, UserModel user) {
+        return getCredentialProvider(session).isConfiguredFor(realm, user, QuestionAnswerCredentialModel.TYPE);
+    }
+
+    /**
+     * [PURPOSE] Utility to resolve the CredentialProvider from the session.
+     * [CALLER] Various internal methods to interact with the database/hashing logic.
+     */
+    @Override
+    public QuestionAnswerCredentialProvider getCredentialProvider(KeycloakSession session) {
+        return (QuestionAnswerCredentialProvider) session.getProvider(CredentialProvider.class, QuestionAnswerCredentialProviderFactory.PROVIDER_ID);
+    }
+
+    /**
+     * [PURPOSE] Lifecycle cleanup.
+     * [CALLER] Keycloak when the session/request ends.
+     */
+    @Override
+    public void close() {}
 }

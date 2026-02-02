@@ -1,4 +1,5 @@
 package com.example.keycloak.authenticator.actprovider;
+
 import com.example.keycloak.authenticator.credmodel.QuestionAnswerCredentialModel;
 import com.example.keycloak.authenticator.credprovider.QuestionAnswerCredentialProvider;
 import com.example.keycloak.authenticator.credprovider.QuestionAnswerCredentialProviderFactory;
@@ -7,179 +8,146 @@ import org.keycloak.authentication.RequiredActionContext;
 import org.keycloak.authentication.RequiredActionProvider;
 import org.keycloak.credential.CredentialProvider;
 import org.keycloak.credential.hash.PasswordHashProvider;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.credential.PasswordCredentialModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * RequiredActionProvider implementation for Secret Question setup.
- *
- * Responsibilities of this class:
- * - Detect whether the user has configured a secret question
- * - Force the user to configure it after login (one-time action)
- * - Render the setup form
- * - Process and store the secret question credential securely
- *
- * Where this is used:
- * - Triggered AFTER successful authentication
- * - Executed before the user is fully logged in
+ * [CLASS RESPONSIBILITY]
+ * This provider handles the "Enrollment" phase of the Secret Question.
+ * It is responsible for checking if a user needs to set up their question,
+ * rendering the setup UI, and securely hashing/storing the answer.
  */
 public class QuestionAnswerRequiredActionProvider implements RequiredActionProvider {
 
-    /**
-     * Required Action ID used to register and trigger this action.
-     *
-     * This must match the ID exposed by the RequiredActionFactory.
-     */
-    public static final String REQUIRED_ACTION_ID =
-            QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID;
+    private static final Logger log = LoggerFactory.getLogger(QuestionAnswerRequiredActionProvider.class);
 
     /**
-     * Evaluates whether this required action should be triggered.
-     *
-     * Responsibilities:
-     * - Check if the user has already configured the secret question
-     * - If not, add this required action to the user
-     *
-     * Who calls this:
-     * - Keycloak after authentication is completed
-     * - Before required actions are executed
+     * Unique ID used to link this provider to the Factory.
+     */
+    public static final String REQUIRED_ACTION_ID = QuestionAnswerRequiredActionProviderFactory.PROVIDER_ID;
+
+    // Security configurations for PBKDF2 hashing
+    private static final String DEFAULT_HASH_ALGORITHM = "pbkdf2-sha256";
+    private static final int HASH_ITERATIONS = 27500;
+    private static final String FORM_NAME = "secret-question.ftl";
+
+    /**
+     * [PURPOSE] Automatically determines if this action should be forced upon the user.
+     * [LOGIC] It queries the CredentialProvider to see if the user already has a
+     * secret question. If not, it adds the Required Action ID to the user's account.
+     * [CALLER] Keycloak Authentication Engine immediately after successful login,
+     * before the user reaches the application.
      */
     @Override
-    public void evaluateTriggers(RequiredActionContext requiredActionContext) {
+    public void evaluateTriggers(RequiredActionContext context) {
+        UserModel user = context.getUser();
+        RealmModel realm = context.getRealm();
+        KeycloakSession session = context.getSession();
 
-        UserModel user = requiredActionContext.getUser();
+        log.debug("Evaluating Secret Question triggers for user: {}", user.getUsername());
 
-        // Resolve the Secret Question CredentialProvider
-        CredentialProvider provider = requiredActionContext.getSession()
-                .getProvider(
-                        CredentialProvider.class,
-                        QuestionAnswerCredentialProviderFactory.PROVIDER_ID
-                );
-        QuestionAnswerCredentialProvider cap =
-                (QuestionAnswerCredentialProvider)provider;
+        QuestionAnswerCredentialProvider provider = (QuestionAnswerCredentialProvider)
+                session.getProvider(CredentialProvider.class, QuestionAnswerCredentialProviderFactory.PROVIDER_ID);
 
-
-        // Check whether the user already has a secret question configured
-        boolean configured =
-                cap.isConfiguredFor(
-                        requiredActionContext.getRealm(),
-                        user,
-                        QuestionAnswerCredentialModel.TYPE
-                );
-
-        // If not configured, force the user to complete this required action
-        if (!configured) {
+        // Logic: Only force setup if the provider exists and the user hasn't finished setup yet
+        if (provider != null && !provider.isConfiguredFor(realm, user, QuestionAnswerCredentialModel.TYPE)) {
+            log.info("User {} has no Secret Question configured. Adding Required Action: {}",
+                    user.getUsername(), REQUIRED_ACTION_ID);
             user.addRequiredAction(REQUIRED_ACTION_ID);
         }
     }
 
     /**
-     * Renders the required action challenge page.
-     *
-     * Responsibilities:
-     * - Display the HTML form for configuring the secret question
-     *
-     * Who calls this:
-     * - Keycloak when this required action must be completed
+     * [PURPOSE] Renders the initial setup form.
+     * [LOGIC] Instructs Keycloak to display the 'secret-question.ftl' template.
+     * [CALLER] Keycloak Required Action Engine when the user has this action
+     * assigned to their profile.
      */
     @Override
-    public void requiredActionChallenge(
-            RequiredActionContext requiredActionContext) {
-
-        requiredActionContext.challenge(
-                requiredActionContext.form()
-                        .createForm("secret-question.ftl")
-        );
+    public void requiredActionChallenge(RequiredActionContext context) {
+        log.debug("Directing user {} to Secret Question setup form.", context.getUser().getUsername());
+        context.challenge(context.form().createForm(FORM_NAME));
     }
 
     /**
-     * Processes the form submission for the required action.
-     *
-     * Responsibilities:
-     * - Read submitted question and answer
-     * - Validate input
-     * - Hash the answer securely
-     * - Create and store the Secret Question credential
-     * - Mark required action as completed
-     *
-     * Who calls this:
-     * - Keycloak when the required action form is submitted
+     * [PURPOSE] Processes the submission of the setup form.
+     * [LOGIC]
+     * 1. Validates that inputs are not blank.
+     * 2. Uses Keycloak's PasswordHashProvider to hash the answer (we never store plain text).
+     * 3. Creates a CredentialModel and persists it via the CredentialManager.
+     * 4. Calls context.success() to mark the action as complete.
+     * [CALLER] Keycloak Required Action Engine when the user submits the HTML form (POST).
      */
     @Override
-    public void processAction(RequiredActionContext requiredActionContext) {
-
-        MultivaluedMap<String,String> formData =
-                requiredActionContext
-                        .getHttpRequest()
-                        .getDecodedFormParameters();
+    public void processAction(RequiredActionContext context) {
+        MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
 
         String question = formData.getFirst("question");
         String answer = formData.getFirst("secret_answer");
 
-        // Basic validation of user input
-        if (question == null || question.trim().isEmpty()
-                || answer == null || answer.trim().isEmpty()) {
+        // 1. Validation Logic
+        if (isBlank(question) || isBlank(answer)) {
+            log.warn("MFA Setup Validation Failed: User {} submitted empty fields.", context.getUser().getUsername());
+            context.challenge(context.form()
+                    .setError("Both question and answer are required.")
+                    .createForm(FORM_NAME));
+            return;
+        }
 
-            requiredActionContext.challenge(
-                    requiredActionContext.form()
-                            .setError("Both question and answer are required")
-                            .createForm("secret-question.ftl")
+        try {
+            // 2. Security: Resolve the hashing algorithm provider
+            PasswordHashProvider hashProvider = context.getSession().getProvider(PasswordHashProvider.class, DEFAULT_HASH_ALGORITHM);
+            if (hashProvider == null) {
+                log.error("Configuration Error: Failed to find hash provider for algorithm: {}", DEFAULT_HASH_ALGORITHM);
+                context.failure();
+                return;
+            }
+
+            // 3. Security: Transform plain-text answer into a secure hash
+            // We trim() the answer to prevent login failures caused by accidental trailing spaces
+            PasswordCredentialModel pcm = hashProvider.encodedCredential(answer.trim(), HASH_ITERATIONS);
+
+            QuestionAnswerCredentialModel credentialModel = QuestionAnswerCredentialModel.createSecretQuestion(
+                    question.trim(),
+                    pcm.getPasswordCredentialData().getAlgorithm(),
+                    pcm.getPasswordCredentialData().getHashIterations(),
+                    pcm.getPasswordSecretData().getValue(),
+                    pcm.getPasswordSecretData().getSalt()
             );
-            return;
+
+            // 4. Persistence: Save to the database
+            context.getUser().credentialManager().createStoredCredential(credentialModel);
+
+            log.info("MFA Setup Complete: User {} successfully configured Secret Question.", context.getUser().getUsername());
+            context.success();
+
+        } catch (Exception e) {
+            // Error Handling: Mask specific system errors from the user while logging details for admins
+            log.error("Internal Server Error during MFA setup for user {}: {}", context.getUser().getUsername(), e.getMessage());
+            context.challenge(context.form()
+                    .setError("An unexpected error occurred. Please try again later.")
+                    .createForm(FORM_NAME));
         }
-
-         //----------- HASHING SETUP -----------
-
-         //Algorithm and iteration count for hashing the answer
-        String algorithm = "pbkdf2-sha256";
-        int iterations = 27500;
-
-        //Resolve the PasswordHashProvider for the chosen algorithm
-        PasswordHashProvider hashProvider =
-                requiredActionContext
-                        .getSession()
-                        .getProvider(
-                                PasswordHashProvider.class,
-                                algorithm
-                        );
-
-        if (hashProvider == null) {
-            requiredActionContext.failure();
-            return;
-        }
-
-        //Hash the provided answer
-        PasswordCredentialModel pcm =
-                hashProvider.encodedCredential(answer, iterations);
-        String encodedAnswer = pcm.getPasswordSecretData().getValue();
-        int iterationsUsed = pcm.getPasswordCredentialData().getHashIterations();
-        String algorithmUsed = pcm.getPasswordCredentialData().getAlgorithm();
-        byte[] saltUsed = pcm.getPasswordSecretData().getSalt();
-
-        QuestionAnswerCredentialModel credentialModel =
-                QuestionAnswerCredentialModel.createSecretQuestion(
-                        question.trim(),
-                        algorithmUsed,
-                        iterationsUsed,
-                        encodedAnswer,
-                        saltUsed
-                );
-
-        requiredActionContext.getUser()
-                .credentialManager()
-                .createStoredCredential(credentialModel);
-
-        requiredActionContext.success();
     }
 
     /**
-     * Cleanup hook for the required action provider.
-     *
-     * Who calls this:
-     * - Keycloak when the provider is destroyed
+     * [PURPOSE] Cleanup resources.
+     * [CALLER] Keycloak at the end of the request/session lifecycle.
      */
     @Override
     public void close() {
+        // Resources are managed by KeycloakSession lifecycle
+    }
 
+    /**
+     * [PURPOSE] Internal helper to check for null or whitespace strings.
+     * [CALLER] Internal processAction() validation.
+     */
+    private boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
     }
 }

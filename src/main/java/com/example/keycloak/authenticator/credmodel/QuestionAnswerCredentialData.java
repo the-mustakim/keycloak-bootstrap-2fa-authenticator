@@ -1,41 +1,34 @@
 package com.example.keycloak.authenticator.credmodel;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * This class stores metadata related to a security question and
- * the hashing configuration used to protect its answer.
+ * [CLASS RESPONSIBILITY]
+ * This class acts as a metadata container for the Secret Question.
+ * It is serialized into a JSON string and stored in the 'credential_data' column
+ * of the Keycloak 'credential' table.
  *
- * It does not store the answer itself, only the information
- * required to verify it securely.
+ * [SECURITY NOTE]
+ * This class MUST NOT store the hashed answer or the salt. Those are stored
+ * separately in the 'secret_data' column via the {@link QuestionAnswerSecretData} class.
  */
+@JsonIgnoreProperties(ignoreUnknown = true) // Design Choice: Prevents failures if future Keycloak versions add metadata
 public class QuestionAnswerCredentialData {
 
-    /**
-     * The security question presented to the user.
-     */
     private final String question;
-
-    /**
-     * The hashing algorithm used to hash the answer
-     * (e.g., PBKDF2, bcrypt, or SHA-256).
-     */
     private final String algorithm;
-
-    /**
-     * The number of iterations used during the hashing process.
-     * Higher values improve security by increasing computation cost.
-     */
     private final int hashIterations;
 
     /**
-     * Constructor used to create a QuestionAnswerCredentialData object.
-     * Annotated with @JsonCreator to support JSON deserialization.
+     * [PURPOSE] Reconstructs the object from stored JSON.
+     * [LOGIC] Uses Jackson's @JsonCreator to map JSON keys directly to final fields.
+     * [CALLER] Jackson (via Keycloak's JsonSerialization utility) when loading credentials from the DB.
      *
      * @param question the security question
-     * @param algorithm the hashing algorithm used
-     * @param hashIterations number of hashing iterations
+     * @param algorithm the hashing algorithm used (e.g., pbkdf2-sha256)
+     * @param hashIterations complexity of the hash
      */
     @JsonCreator
     public QuestionAnswerCredentialData(
@@ -48,24 +41,24 @@ public class QuestionAnswerCredentialData {
     }
 
     /**
-     * Returns the security question.
-     * @return the question as a String
+     * [PURPOSE] Provides the question text for UI rendering.
+     * [CALLER] The Authenticator when building the challenge form.
      */
     public String getQuestion() {
         return question;
     }
 
     /**
-     * Returns the hashing algorithm used.
-     * @return hashing algorithm name
+     * [PURPOSE] Identifies which hashing provider to use for verification.
+     * [CALLER] The CredentialProvider during validation.
      */
     public String getAlgorithm() {
         return algorithm;
     }
 
     /**
-     * Returns the number of hash iterations.
-     * @return number of iterations
+     * [PURPOSE] Provides the iteration count for the hashing provider.
+     * [CALLER] The CredentialProvider during validation.
      */
     public int getHashIterations() {
         return hashIterations;

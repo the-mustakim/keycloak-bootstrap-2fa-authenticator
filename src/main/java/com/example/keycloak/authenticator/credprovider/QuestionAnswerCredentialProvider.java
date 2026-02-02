@@ -5,70 +5,46 @@ import org.keycloak.common.util.Time;
 import org.keycloak.credential.*;
 import org.keycloak.credential.hash.PasswordHashProvider;
 import org.keycloak.models.KeycloakSession;
-import org.jboss.logging.Logger;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.credential.PasswordCredentialModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * CredentialProvider implementation for the "Secret Question / Answer" credential.
- *
- * Responsibilities of this class:
- * - Define the credential TYPE handled by this provider
- * - Create and delete secret-question credentials for a user
- * - Validate user-provided answers during authentication
- * - Expose metadata so Keycloak can display this credential in UI / flows
- *
- * Who uses this class:
- * - Called by custom Authenticators via CredentialValidator
- * - Called by Keycloak internally when checking if a user is configured
- * - Used during authentication flows (e.g., 2FA step)
+ * [CLASS RESPONSIBILITY]
+ * This provider is the "Security Engine" for the Secret Question credential.
+ * It manages the lifecycle (creation/deletion) and the verification logic,
+ * ensuring answers are checked using secure hashing algorithms rather than plain-text comparison.
  */
 public class QuestionAnswerCredentialProvider
         implements CredentialProvider<QuestionAnswerCredentialModel>, CredentialInputValidator {
 
-    private static final Logger logger =
-            Logger.getLogger(QuestionAnswerCredentialProvider.class);
+    private static final Logger log = LoggerFactory.getLogger(QuestionAnswerCredentialProvider.class);
 
-    /**
-     * Keycloak session, provided per-request.
-     *
-     * Used to:
-     * - Resolve PasswordHashProvider
-     * - Access realm / user context indirectly
-     */
     protected KeycloakSession keycloakSession;
 
     /**
-     * Constructor called by QuestionAnswerCredentialProviderFactory.
-     *
-     * Who calls this:
-     * - Keycloak runtime when resolving this provider via session.getProvider(...)
+     * [PURPOSE] Constructor to inject the session context.
+     * [CALLER] The Factory class during session initialization.
      */
-    public QuestionAnswerCredentialProvider(KeycloakSession keycloakSession){
+    public QuestionAnswerCredentialProvider(KeycloakSession keycloakSession) {
         this.keycloakSession = keycloakSession;
     }
 
     /**
-     * Returns the credential type supported by this provider.
-     *
-     * Who calls this:
-     * - Keycloak when routing credential operations
-     * - Authenticators checking credential compatibility
+     * [PURPOSE] Returns the unique string ID for this credential type.
+     * [CALLER] Keycloak internal routing and Authenticators.
      */
     @Override
-    public String getType(){
+    public String getType() {
         return QuestionAnswerCredentialModel.TYPE;
     }
 
     /**
-     * Converts a generic CredentialModel (from DB) into
-     * a strongly-typed QuestionAnswerCredentialModel.
-     *
-     * Who calls this:
-     * - Keycloak when loading credentials
-     * - isValid() during authentication
+     * [PURPOSE] Hydrates a domain-specific model from a raw database record.
+     * [CALLER] Keycloak when retrieving credentials from the 'credential' table.
      */
     @Override
     public QuestionAnswerCredentialModel getCredentialFromModel(CredentialModel model) {
@@ -76,148 +52,113 @@ public class QuestionAnswerCredentialProvider
     }
 
     /**
-     * Persists a new Secret Question credential for a user.
-     *
-     * Who calls this:
-     * - RequiredAction when user sets up the secret question
-     * - Admin or programmatic credential creation
+     * [PURPOSE] Saves a new credential to the database for a specific user.
+     * [CALLER] RequiredActionProvider during the enrollment/setup phase.
      */
     @Override
-    public CredentialModel createCredential(
-            RealmModel realm,
-            UserModel user,
-            QuestionAnswerCredentialModel credentialModel) {
-
-        // Ensure creation timestamp is set before persisting
-        if(credentialModel.getCreatedDate()==null){
+    public CredentialModel createCredential(RealmModel realm, UserModel user, QuestionAnswerCredentialModel credentialModel) {
+        if (credentialModel.getCreatedDate() == null) {
             credentialModel.setCreatedDate(Time.currentTimeMillis());
         }
-
-        // Delegate persistence to Keycloak credential manager
-        return user.credentialManager()
-                .createStoredCredential(credentialModel);
+        log.debug("Persisting new Secret Question for user: {}", user.getUsername());
+        return user.credentialManager().createStoredCredential(credentialModel);
     }
 
     /**
-     * Deletes an existing Secret Question credential by ID.
-     *
-     * Who calls this:
-     * - Admin Console
-     * - User credential removal flows (if enabled)
+     * [PURPOSE] Removes a credential record from the database.
+     * [CALLER] Admin Console or User Account Console.
      */
     @Override
-    public boolean deleteCredential(
-            RealmModel realm,
-            UserModel user,
-            String credentialId) {
-
-        return user.credentialManager()
-                .removeStoredCredentialById(credentialId);
+    public boolean deleteCredential(RealmModel realm, UserModel user, String credentialId) {
+        log.info("Deleting Secret Question credential {} for user: {}", credentialId, user.getUsername());
+        return user.credentialManager().removeStoredCredentialById(credentialId);
     }
 
     /**
-     * Validates the user-provided answer during authentication.
-     *
-     * This method:
-     * - Extracts the stored credential
-     * - Reconstructs the password hash metadata
-     * - Verifies the provided answer using PasswordHashProvider
-     *
-     * Who calls this:
-     * - Custom Authenticator via CredentialValidator
-     * - Keycloak authentication engine during login flow
+     * [PURPOSE] The core security check. Validates the user's answer.
+     * [LOGIC]
+     * 1. Loads the hash metadata from the DB.
+     * 2. Resolves the correct PasswordHashProvider (e.g., PBKDF2).
+     * 3. Performs a secure verification of the input against the stored hash.
+     * [CALLER] Custom Authenticator via the 'isValid' check.
      */
     @Override
-    public boolean isValid(
-            RealmModel realm,
-            UserModel user,
-            CredentialInput input) {
-
+    public boolean isValid(RealmModel realm, UserModel user, CredentialInput input) {
+        // Validation: Ensure input is the correct type
         if (!(input instanceof UserCredentialModel userInput)) return false;
         if (!getType().equals(userInput.getType())) return false;
 
         String credentialId = userInput.getCredentialId();
-        if (credentialId == null) return false;
 
-        CredentialModel stored =
-                user.credentialManager().getStoredCredentialById(credentialId);
+        // Load the stored credential from DB
+        CredentialModel stored = (credentialId != null)
+                ? user.credentialManager().getStoredCredentialById(credentialId)
+                : getDefaultCredential(keycloakSession, realm, user);
 
-        if (stored == null) return false;
+        if (stored == null) {
+            log.warn("Validation failed: No stored credential found for user {}", user.getUsername());
+            return false;
+        }
 
-        QuestionAnswerCredentialModel model =
-                getCredentialFromModel(stored);
+        QuestionAnswerCredentialModel model = getCredentialFromModel(stored);
 
-        PasswordHashProvider hashProvider =
-                keycloakSession.getProvider(
-                        PasswordHashProvider.class,
-                        model.getQuestionAnswerCredentialData().getAlgorithm()
-                );
-
-        if (hashProvider == null) return false;
-
-        PasswordCredentialModel pcm =
-                PasswordCredentialModel.createFromValues(
-                        model.getQuestionAnswerCredentialData().getAlgorithm(),
-                        model.getQuestionAnswerSecretData().getSalt(),
-                        model.getQuestionAnswerCredentialData().getHashIterations(),
-                        model.getQuestionAnswerSecretData().getHashedAnswer()
-                );
-
-        return hashProvider.verify(
-                userInput.getChallengeResponse(),
-                pcm
+        // Security: Use Keycloak's Hashing SPI to verify the answer
+        PasswordHashProvider hashProvider = keycloakSession.getProvider(
+                PasswordHashProvider.class,
+                model.getQuestionAnswerCredentialData().getAlgorithm()
         );
+
+        if (hashProvider == null) {
+            log.error("Security Error: Hash provider '{}' not found for user {}",
+                    model.getQuestionAnswerCredentialData().getAlgorithm(), user.getUsername());
+            return false;
+        }
+
+        // Reconstruct the password model for the hash provider to consume
+        PasswordCredentialModel pcm = PasswordCredentialModel.createFromValues(
+                model.getQuestionAnswerCredentialData().getAlgorithm(),
+                model.getQuestionAnswerSecretData().getSalt(),
+                model.getQuestionAnswerCredentialData().getHashIterations(),
+                model.getQuestionAnswerSecretData().getHashedAnswer()
+        );
+
+        // hashProvider.verify is inherently constant-time to prevent timing attacks
+        return hashProvider.verify(userInput.getChallengeResponse(), pcm);
     }
 
     /**
-     * Checks whether this provider supports the given credential type.
-     *
-     * Who calls this:
-     * - Keycloak credential routing logic
+     * [PURPOSE] Helper to get the primary secret question for a user if multiple exist.
      */
+    public QuestionAnswerCredentialModel getDefaultCredential(KeycloakSession session, RealmModel realm, UserModel user) {
+        return user.credentialManager().getStoredCredentialsByTypeStream(getType())
+                .map(this::getCredentialFromModel)
+                .findFirst()
+                .orElse(null);
+    }
+
     @Override
     public boolean supportsCredentialType(String credentialType) {
         return getType().equals(credentialType);
     }
 
-    /**
-     * Checks whether the user has this credential configured.
-     *
-     * Used by:
-     * - Conditional flows
-     * - configuredFor() checks in Authenticators
-     */
     @Override
-    public boolean isConfiguredFor(
-            RealmModel realm,
-            UserModel user,
-            String credentialType) {
+    public boolean isConfiguredFor(RealmModel realm, UserModel user, String credentialType) {
         if (!getType().equals(credentialType)) return false;
-        // Return true if the stream is NOT empty
         return user.credentialManager().getStoredCredentialsByTypeStream(getType()).findAny().isPresent();
     }
 
     /**
-     * Provides metadata about this credential type for Keycloak UI and flows.
-     *
-     * Who uses this:
-     * - Admin Console
-     * - Account Console
-     * - Credential management screens
+     * [PURPOSE] Defines how this credential appears in the Admin UI.
+     * [CALLER] Keycloak Admin Console.
      */
     @Override
-    public CredentialTypeMetadata getCredentialTypeMetadata(
-            CredentialTypeMetadataContext context) {
+    public CredentialTypeMetadata getCredentialTypeMetadata(CredentialTypeMetadataContext context) {
         return CredentialTypeMetadata.builder()
                 .type(getType())
                 .category(CredentialTypeMetadata.Category.TWO_FACTOR)
                 .displayName("Secret Question")
-                .helpText("Answer to a secret question")
+                .helpText("A custom security question and answer used for identity verification.")
                 .removeable(true)
-                .createAction(null)
-                .updateAction(null)
                 .build(keycloakSession);
-
     }
-
 }

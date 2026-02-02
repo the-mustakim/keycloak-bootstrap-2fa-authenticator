@@ -7,80 +7,64 @@ import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.provider.ProviderConfigProperty;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Factory class for QuestionAnswerAuthenticator.
+ * [CLASS RESPONSIBILITY]
+ * This factory registers the Secret Question Authenticator with Keycloak.
+ * It defines how the authenticator is identified, how it appears in the Admin Console,
+ * and what configuration settings (like cookie age) are available to administrators.
  *
- * Responsibilities of this class:
- * - Registers the Secret Question Authenticator with Keycloak
- * - Controls how the authenticator appears and behaves in Admin Console
- * - Defines supported execution requirements (REQUIRED, ALTERNATIVE, etc.)
- * - Exposes configurable properties for this authenticator
- *
- * This class is discovered by Keycloak via:
- * META-INF/services/org.keycloak.authentication.AuthenticatorFactory
+ * [DISCOVERY]
+ * Keycloak discovers this class via: META-INF/services/org.keycloak.authentication.AuthenticatorFactory
  */
 public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory {
 
+    private static final Logger log = LoggerFactory.getLogger(QuestionAnswerAuthenticatorFactory.class);
+
     /**
-     * Unique provider ID used to reference this authenticator.
-     *
-     * Used when:
-     * - Binding the authenticator to an authentication flow
-     * - Resolving the authenticator at runtime
+     * Unique provider ID for this authenticator.
+     * Matches the ID used by the provider to link runtime logic to flow configuration.
      */
     public static final String PROVIDER_ID = "secret-question-authenticator";
 
     /**
-     * Singleton instance of the authenticator.
-     *
-     * Authenticators are typically stateless and reused.
-     * Keycloak will call methods on this instance per request.
+     * [DESIGN CHOICE] Singleton Pattern.
+     * Since the Authenticator is stateless (it relies on the context per request),
+     * we reuse a single instance to reduce memory allocation.
      */
-    private static final QuestionAnswerAuthenticator SINGLETON =
-            new QuestionAnswerAuthenticator();
+    private static final QuestionAnswerAuthenticator SINGLETON = new QuestionAnswerAuthenticator();
 
     /**
-     * List of configuration properties exposed in the Admin Console
-     * when this authenticator is selected in a flow.
+     * List of configuration UI elements shown in the Keycloak Admin Console.
      */
-    private static final List<ProviderConfigProperty> configProperties =
-            new ArrayList<ProviderConfigProperty>();
+    private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
 
     /**
-     * Defines which execution requirements are allowed for this authenticator.
-     *
-     * These values appear as selectable options in the Admin Console.
+     * Defines selectable execution requirements (REQUIRED, ALTERNATIVE, etc.).
      */
-    private static AuthenticationExecutionModel.Requirement[] REQUIREMENT_CHOICES = {
+    private static final AuthenticationExecutionModel.Requirement[] REQUIREMENT_CHOICES = {
             AuthenticationExecutionModel.Requirement.REQUIRED,
             AuthenticationExecutionModel.Requirement.ALTERNATIVE,
             AuthenticationExecutionModel.Requirement.DISABLED
     };
 
-    /**
-     * Static initialization block defining authenticator configuration options.
-     *
-     * These options are editable per execution in the authentication flow.
-     */
     static {
-        ProviderConfigProperty property;
-        property = new ProviderConfigProperty();
+        ProviderConfigProperty property = new ProviderConfigProperty();
         property.setName("cookie.max.age");
-        property.setLabel("Cookie Max Age");
+        property.setLabel("Trusted Device Cookie Max Age");
         property.setType(ProviderConfigProperty.STRING_TYPE);
-        property.setHelpText("Max age in seconds of the SECRET_QUESTION_COOKIE.");
+        property.setHelpText("Defines how many seconds the browser should be trusted after a successful answer (Default: 30 days).");
+        property.setDefaultValue("2592000");
         configProperties.add(property);
     }
 
     /**
-     * Returns the unique ID of this authenticator factory.
-     *
-     * Who calls this:
-     * - Keycloak during provider discovery and registration
+     * [PURPOSE] Returns the unique string identifier for this authenticator.
+     * [CALLER] Keycloak during server boot and provider discovery.
      */
     @Override
     public String getId() {
@@ -88,14 +72,9 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Creates (or returns) an Authenticator instance.
-     *
-     * Who calls this:
-     * - Keycloak runtime when executing authentication flows
-     *
-     * Note:
-     * - Returning a singleton is common and recommended
-     *   for stateless authenticators
+     * [PURPOSE] Returns the Authenticator instance to execute logic in the flow.
+     * [LOGIC] Returns the pre-initialized SINGLETON.
+     * [CALLER] Keycloak runtime whenever the authentication flow hits this execution.
      */
     @Override
     public Authenticator create(KeycloakSession session) {
@@ -103,11 +82,8 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Defines which execution requirements are allowed
-     * for this authenticator in authentication flows.
-     *
-     * Who uses this:
-     * - Admin Console UI when configuring flows
+     * [PURPOSE] Defines the available "Requirement" options in the Admin Console.
+     * [CALLER] Keycloak Admin UI when an administrator is designing a flow.
      */
     @Override
     public AuthenticationExecutionModel.Requirement[] getRequirementChoices() {
@@ -115,14 +91,9 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Indicates whether users are allowed to set up this authenticator
-     * themselves if they are not yet configured.
-     *
-     * If true:
-     * - setRequiredActions() may be invoked
-     *
-     * Who calls this:
-     * - Keycloak flow engine
+     * [PURPOSE] Allows Keycloak to trigger 'setRequiredActions' if the user isn't configured.
+     * [LOGIC] Set to true to support our "Bootstrap" logic.
+     * [CALLER] Keycloak Flow Engine.
      */
     @Override
     public boolean isUserSetupAllowed() {
@@ -130,13 +101,8 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Indicates whether this authenticator supports configuration.
-     *
-     * If true:
-     * - Admin Console allows per-execution configuration
-     *
-     * Who uses this:
-     * - Admin Console UI
+     * [PURPOSE] Tells Keycloak if this authenticator has a 'Settings' button in the UI.
+     * [CALLER] Keycloak Admin Console.
      */
     @Override
     public boolean isConfigurable() {
@@ -144,11 +110,8 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Returns the list of configuration properties supported
-     * by this authenticator.
-     *
-     * Who uses this:
-     * - Admin Console to render configuration form
+     * [PURPOSE] Returns the list of properties to build the configuration UI.
+     * [CALLER] Keycloak Admin Console when clicking 'Settings' on this authenticator.
      */
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
@@ -156,8 +119,8 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Display name shown in the Admin Console
-     * when selecting this authenticator.
+     * [PURPOSE] The text shown in the flow designer list.
+     * [CALLER] Keycloak Admin Console.
      */
     @Override
     public String getDisplayType() {
@@ -165,17 +128,17 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Help text shown in the Admin Console tooltip
-     * when selecting this authenticator.
+     * [PURPOSE] Tooltip/help text for admins.
+     * [CALLER] Keycloak Admin Console.
      */
     @Override
     public String getHelpText() {
-        return "Prompts user to answer a secret question during login";
+        return "Prompts user to answer a secret question during login. Supports trusted device cookies.";
     }
 
     /**
-     * Category used to group this authenticator
-     * in the Admin Console.
+     * [PURPOSE] Groups the authenticator under a category in the flow designer.
+     * [CALLER] Keycloak Admin Console.
      */
     @Override
     public String getReferenceCategory() {
@@ -183,31 +146,29 @@ public class QuestionAnswerAuthenticatorFactory implements AuthenticatorFactory 
     }
 
     /**
-     * Initialization hook called when Keycloak boots.
-     *
-     * Who calls this:
-     * - Keycloak during server startup
+     * [PURPOSE] Early boot initialization.
+     * [CALLER] Keycloak Server during startup.
      */
     @Override
-    public void init(Config.Scope scope) { }
+    public void init(Config.Scope scope) {
+        log.debug("Initializing Secret Question Authenticator Factory [ID: {}]", PROVIDER_ID);
+    }
 
     /**
-     * Post-initialization hook called after all factories
-     * have been initialized.
-     *
-     * Who calls this:
-     * - Keycloak during startup
+     * [PURPOSE] Post-boot operations after all providers are ready.
+     * [CALLER] Keycloak Server.
      */
     @Override
-    public void postInit(KeycloakSessionFactory factory) { }
+    public void postInit(KeycloakSessionFactory factory) {
+        log.info("Secret Question Authenticator Factory registered successfully.");
+    }
 
     /**
-     * Cleanup hook when the factory is being destroyed.
-     *
-     * Who calls this:
-     * - Keycloak during shutdown
+     * [PURPOSE] Cleanup during server shutdown.
+     * [CALLER] Keycloak Server.
      */
     @Override
-    public void close() { }
-
+    public void close() {
+        log.debug("Closing Secret Question Authenticator Factory.");
+    }
 }

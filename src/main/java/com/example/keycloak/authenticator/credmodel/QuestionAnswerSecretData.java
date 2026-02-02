@@ -1,54 +1,52 @@
 package com.example.keycloak.authenticator.credmodel;
+
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * This class represents the secret data for a security question answer.
- * It stores the hashed version of the answer along with the salt used
- * during the hashing process.
- * This ensures that the original answer is never stored in plain text,
- * improving security.
+ * [CLASS RESPONSIBILITY]
+ * This class handles the storage of the sensitive parts of the credential.
+ * It is serialized into JSON and stored in the 'secret_data' column of the database.
+ * * [SECURITY NOTE]
+ * This contains the hashed answer and the salt. Access to this data should
+ * be restricted to the CredentialProvider during the verification phase.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class QuestionAnswerSecretData {
 
-    /**
-     * The hashed value of the user's answer.
-     * The original answer cannot be retrieved from this value.
-     */
     private final String hashedAnswer;
-
-    /**
-     * The salt used while hashing the answer.
-     * Salt helps protect against rainbow table and brute-force attacks.
-     */
     private final byte[] salt;
 
     /**
-     * Constructor used to create a QuestionAnswerSecretData object.
-     * It is annotated with @JsonCreator to allow JSON deserialization.
+     * [PURPOSE] Reconstructs the secret data from the database JSON.
+     * [LOGIC] Uses defensive copying (.clone()) for the salt to ensure immutability.
+     * [CALLER] Jackson JSON provider when loading the credential secret.
      *
-     * @param answer the hashed version of the answer
-     * @param salt the salt used during hashing
+     * @param hashedAnswer the PBKDF2 (or other) encoded string
+     * @param salt the random bytes used to salt the hash
      */
     @JsonCreator
     public QuestionAnswerSecretData(
             @JsonProperty("hashedAnswer") String hashedAnswer,
             @JsonProperty("salt") byte[] salt) {
         this.hashedAnswer = hashedAnswer;
+        // Design Choice: Defensive copy to prevent external modification of the byte array
         this.salt = (salt == null) ? null : salt.clone();
     }
 
     /**
-     * Returns the hashed answer.
-     * @return hashed answer as a String
+     * [PURPOSE] Provides the hash for comparison.
+     * [CALLER] The CredentialProvider's 'isValid' method.
      */
     public String getHashedAnswer() {
         return hashedAnswer;
     }
 
     /**
-     * Returns the salt used for hashing the answer.
-     * @return salt as a byte array
+     * [PURPOSE] Provides the salt for the hashing algorithm.
+     * [LOGIC] Returns a clone of the byte array to maintain class encapsulation.
+     * [CALLER] The CredentialProvider when re-hashing the user's input for comparison.
      */
     public byte[] getSalt() {
         return (salt == null) ? null : salt.clone();
