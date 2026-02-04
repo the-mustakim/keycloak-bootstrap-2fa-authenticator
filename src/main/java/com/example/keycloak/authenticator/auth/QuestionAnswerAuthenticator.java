@@ -102,7 +102,6 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
 
         // Execution ID is required for Keycloak to map the POST request back to this step
         form.setExecution(context.getExecution().getId());
-
         Response challenge = form.createForm(FORM_NAME);
         context.challenge(challenge);
     }
@@ -118,7 +117,6 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
         MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
         String secretInput = formData.getFirst("secret_answer");
         String credentialId = formData.getFirst("credentialId");
-
         if (secretInput == null || secretInput.trim().isEmpty()) {
             log.warn("User {} submitted an empty answer.", context.getUser().getUsername());
             renderForm(context, "Answer cannot be empty.");
@@ -138,6 +136,7 @@ public class QuestionAnswerAuthenticator implements Authenticator, CredentialVal
                     context.form()
                             .setError("Invalid answer. Please try again.")
                             .setExecution(context.getExecution().getId())
+                            .setAttribute("credentialId",credentialId)
                             .setAttribute("question", getQuestionText(context))
                             .createForm(FORM_NAME));
         }

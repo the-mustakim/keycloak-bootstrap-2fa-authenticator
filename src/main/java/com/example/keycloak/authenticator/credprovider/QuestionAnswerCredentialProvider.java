@@ -129,6 +129,7 @@ public class QuestionAnswerCredentialProvider
     /**
      * [PURPOSE] Helper to get the primary secret question for a user if multiple exist.
      */
+    @Override
     public QuestionAnswerCredentialModel getDefaultCredential(KeycloakSession session, RealmModel realm, UserModel user) {
         return user.credentialManager().getStoredCredentialsByTypeStream(getType())
                 .map(this::getCredentialFromModel)
